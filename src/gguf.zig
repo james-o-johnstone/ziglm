@@ -1,10 +1,5 @@
 const std = @import("std");
 
-const GGUFError = error{
-    InvalidFile,
-    UnsupportedVersion,
-};
-
 const GGUFParseError = error{
     BufferTooSmall,
     EndOfStream,
@@ -88,9 +83,8 @@ const Tensor = struct {
         const dimensions = try allocator.alloc(u64, n_dimensions);
         errdefer allocator.free(dimensions);
 
-        var j: u32 = 0;
-        while (j < n_dimensions) : (j += 1) {
-            dimensions[j] = try reader.takeInt(u64, .little);
+        for (dimensions) |*dim| {
+            dim.* = try reader.takeInt(u64, .little);
         }
 
         const tensor_type = try reader.takeEnum(GGMLType, .little);
@@ -120,14 +114,10 @@ const GgufString = struct {
         const len = try reader.takeInt(u64, .little);
         if (len > 65535) return error.StringTooLong;
 
-        var data = try allocator.alloc(u8, len);
+        const data = try allocator.alloc(u8, len);
         errdefer allocator.free(data);
 
-        var i: usize = 0;
-        while (i < len) : (i += 1) {
-            const byte = try reader.takeByte();
-            data[i] = byte;
-        }
+        try reader.readSliceAll(data);
 
         return GgufString{ .len = len, .data = data };
     }
@@ -151,9 +141,8 @@ const GgufArray = struct {
         const arr = try allocator.alloc(GgufMetadataValue, len);
         errdefer allocator.free(arr);
 
-        var i: u64 = 0;
-        while (i < len) : (i += 1) {
-            arr[i] = try GgufMetadataValue.parse(reader, value_type, allocator);
+        for (arr) |*value| {
+            value.* = try GgufMetadataValue.parse(reader, value_type, allocator);
         }
 
         return GgufArray{ .type = value_type, .len = len, .array = arr };
@@ -197,7 +186,6 @@ const GgufMetadataValueType = enum(u32) {
     // The value is a UTF-8 non-null-terminated string, with length prepended.
     GGUF_METADATA_VALUE_TYPE_STRING = 8,
     // The value is an array of other values, with the length and type prepended.
-    ///
     // Arrays can be nested, and the length of the array is the number of elements in the array, not the number of bytes.
     GGUF_METADATA_VALUE_TYPE_ARRAY = 9,
     // The value is a 64-bit unsigned little-endian integer.
@@ -353,9 +341,8 @@ const Gguf = struct {
             }
             metadata.deinit();
         }
-        var i: usize = 0;
         std.debug.print("about to read metadata\n", .{});
-        while (i < metadata_kv_count) : (i += 1) {
+        for (0..metadata_kv_count) |_| {
             const k = try GgufString.parse(allocator, r);
             std.debug.print("k: {s}\n", .{k.data});
             const v = try GgufMetadataKvT.parse(r, allocator);
@@ -364,8 +351,7 @@ const Gguf = struct {
         }
 
         var tensors = std.ArrayList(Tensor).empty;
-        i = 0;
-        while (i < tensor_count) : (i += 1) {
+        for (0..tensor_count) |_| {
             const tensor = try Tensor.parse(r, allocator);
             try tensors.append(allocator, tensor);
         }
@@ -404,10 +390,6 @@ const Gguf = struct {
     }
 };
 
-pub fn parse(filename: []const u8) !void {
-    std.debug.print("{s}\n", .{filename});
-}
-
 pub fn load(io: std.Io, allocator: std.mem.Allocator, filename: []const u8) !void {
     var file = std.Io.Dir.cwd().openFile(io, filename, .{}) catch {
         std.debug.print("Failed to open file: {s}\n", .{filename});
@@ -417,10 +399,6 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, filename: []const u8) !voi
     defer gguf.deinit(allocator);
     gguf.print();
     defer file.close(io);
-}
-
-test "parse" {
-    try parse("gguf.zig");
 }
 
 test "load" {
