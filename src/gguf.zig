@@ -16,7 +16,101 @@ const GGUFParseError = error{
     Unimplemented,
 };
 
-const Tensor = struct { name: []const u8, n_dimensions: u32, dimensions: u64, type: u32, offset: u64 };
+// zig fmt: off
+const GGMLType = enum(u32) {
+    GGML_TYPE_F32 = 0,
+    GGML_TYPE_F16 = 1,
+    GGML_TYPE_Q4_0 = 2,
+    GGML_TYPE_Q4_1 = 3,
+    // 4, 5: Q4_2, Q4_3 — support removed
+    GGML_TYPE_Q5_0 = 6,
+    GGML_TYPE_Q5_1 = 7,
+    GGML_TYPE_Q8_0 = 8,
+    GGML_TYPE_Q8_1 = 9,
+    GGML_TYPE_Q2_K = 10,
+    GGML_TYPE_Q3_K = 11,
+    GGML_TYPE_Q4_K = 12,
+    GGML_TYPE_Q5_K = 13,
+    GGML_TYPE_Q6_K = 14,
+    GGML_TYPE_Q8_K = 15,
+    GGML_TYPE_IQ2_XXS = 16,
+    GGML_TYPE_IQ2_XS = 17,
+    GGML_TYPE_IQ3_XXS = 18,
+    GGML_TYPE_IQ1_S = 19,
+    GGML_TYPE_IQ4_NL = 20,
+    GGML_TYPE_IQ3_S = 21,
+    GGML_TYPE_IQ2_S = 22,
+    GGML_TYPE_IQ4_XS = 23,
+    GGML_TYPE_I8 = 24,
+    GGML_TYPE_I16 = 25,
+    GGML_TYPE_I32 = 26,
+    GGML_TYPE_I64 = 27,
+    GGML_TYPE_F64 = 28,
+    GGML_TYPE_IQ1_M = 29,
+    GGML_TYPE_BF16 = 30,
+    // 31-33: Q4_0_4_4, Q4_0_4_8, Q4_0_8_8 — removed from gguf files
+    GGML_TYPE_TQ1_0 = 34,
+    GGML_TYPE_TQ2_0 = 35,
+    // 36-38: IQ4_NL_4_4, IQ4_NL_4_8, IQ4_NL_8_8 — removed
+    GGML_TYPE_MXFP4 = 39,
+    GGML_TYPE_COUNT = 40,
+};
+// zig fmt: on
+
+// zig fmt: off
+const Tensor = struct {
+    // The name of the tensor. It is a standard GGUF string, with the caveat that
+    // it must be at most 64 bytes long.
+    name: GgufString,
+    // The number of dimensions in the tensor.
+    // Currently at most 4, but this may change in the future.
+    n_dimensions: u32,
+    // The dimensions of the tensor.
+    dimensions: []const u64,
+    // The type of the tensor.
+    type: GGMLType,
+    // The offset of the tensor's data in this file in bytes.
+    //
+    // This offset is relative to `tensor_data`, not to the start
+    // of the file, to make it easier for writers to write the file.
+    // Readers should consider exposing this offset relative to the
+    // file to make it easier to read the data.
+    //
+    // Must be a multiple of `ALIGNMENT`. That is, `align_offset(offset) == offset`.
+    offset: u64,
+
+    fn parse(reader: *std.Io.Reader, allocator: std.mem.Allocator) !Tensor {
+        const name = try GgufString.parse(allocator, reader);
+        errdefer name.deinit(allocator);
+
+        const n_dimensions = try reader.takeInt(u32, .little);
+
+        const dimensions = try allocator.alloc(u64, n_dimensions);
+        errdefer allocator.free(dimensions);
+
+        var j: u32 = 0;
+        while (j < n_dimensions) : (j += 1) {
+            dimensions[j] = try reader.takeInt(u64, .little);
+        }
+
+        const tensor_type = try reader.takeEnum(GGMLType, .little);
+        const offset = try reader.takeInt(u64, .little);
+
+        return Tensor{
+            .name = name,
+            .n_dimensions = n_dimensions,
+            .dimensions = dimensions,
+            .type = tensor_type,
+            .offset = offset,
+        };
+    }
+
+    pub fn deinit(self: *Tensor, allocator: std.mem.Allocator) void {
+        self.name.deinit(allocator);
+        allocator.free(self.dimensions);
+    }
+};
+// zig fmt: on
 
 const GgufString = struct {
     len: u64,
@@ -115,20 +209,20 @@ const GgufMetadataValueType = enum(u32) {
 };
 
 // zig fmt: off
-const GgufMetadataValue = union(GgufMetadataValueType) { 
-    GGUF_METADATA_VALUE_TYPE_UINT8: u8, 
-    GGUF_METADATA_VALUE_TYPE_INT8: i8, 
-    GGUF_METADATA_VALUE_TYPE_UINT16: u16, 
-    GGUF_METADATA_VALUE_TYPE_INT16: i16, 
-    GGUF_METADATA_VALUE_TYPE_UINT32: u32, 
-    GGUF_METADATA_VALUE_TYPE_INT32: i32, 
-    GGUF_METADATA_VALUE_TYPE_FLOAT32: f32, 
+const GgufMetadataValue = union(GgufMetadataValueType) {
+    GGUF_METADATA_VALUE_TYPE_UINT8: u8,
+    GGUF_METADATA_VALUE_TYPE_INT8: i8,
+    GGUF_METADATA_VALUE_TYPE_UINT16: u16,
+    GGUF_METADATA_VALUE_TYPE_INT16: i16,
+    GGUF_METADATA_VALUE_TYPE_UINT32: u32,
+    GGUF_METADATA_VALUE_TYPE_INT32: i32,
+    GGUF_METADATA_VALUE_TYPE_FLOAT32: f32,
     GGUF_METADATA_VALUE_TYPE_BOOL: bool,
     GGUF_METADATA_VALUE_TYPE_STRING: GgufString,
     GGUF_METADATA_VALUE_TYPE_ARRAY: GgufArray,
-    GGUF_METADATA_VALUE_TYPE_UINT64: u64, 
-    GGUF_METADATA_VALUE_TYPE_INT64: i64, 
-    GGUF_METADATA_VALUE_TYPE_FLOAT64: f64, 
+    GGUF_METADATA_VALUE_TYPE_UINT64: u64,
+    GGUF_METADATA_VALUE_TYPE_INT64: i64,
+    GGUF_METADATA_VALUE_TYPE_FLOAT64: f64,
 
     fn parse(reader: *std.Io.Reader, value_type: GgufMetadataValueType, allocator: std.mem.Allocator) GGUFParseError!GgufMetadataValue {
         switch (value_type) {
@@ -177,20 +271,6 @@ const GgufMetadataValue = union(GgufMetadataValueType) {
                 return error.Unimplemented;
             },
         }
-
-        // do i need to switch case the union types or is there a beter way?
-
-        
-
-
-        //var len_bytes: [8]u8 = undefined;
-        //_ = try reader.readSliceShort(&len_bytes);
-        //const len = std.mem.bytesAsValue(u64, len_bytes[0..8]).*;
-
-        //var data_bytes: []u8 = undefined;
-        //_ = try reader.readSliceShort(&data_bytes[0..len]);
-
-        //return GgufString{ .len = len, .data = data_bytes[0..len] };
         return error.Unimplemented;
     }
 
@@ -243,12 +323,12 @@ const Gguf = struct {
     const MAGIC = "GGUF";
     const VERSION = 3;
 
-    magic: []const u8,
+    magic: [4]u8,
     version: u32,
     tensor_count: u64,
     metadata_kv_count: u64,
     metadata: std.StringHashMap(GgufMetadataKvT),
-    tensors: []Tensor,
+    tensors: std.ArrayList(Tensor),
 
     fn initFromFile(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File) !Gguf {
         var buf: [4096]u8 = undefined;
@@ -256,12 +336,10 @@ const Gguf = struct {
         var r = &reader.interface;
 
         const magic = try r.takeArray(4);
-        var magic_array: [4]u8 = undefined;
-        @memcpy(&magic_array, &magic[0..]);
-        std.debug.print("Magic: {s}\n", .{magic_array[0..]});
+        const magic_bytes = magic.*;
         const version = try r.takeInt(u32, .little);
 
-        if (!std.mem.eql(u8, magic[0..], Gguf.MAGIC)) return error.InvalidFile;
+        if (!std.mem.eql(u8, &magic_bytes, Gguf.MAGIC)) return error.InvalidFile;
         if (version != Gguf.VERSION) return error.UnsupportedVersion;
 
         const tensor_count = try r.takeInt(u64, .little);
@@ -281,58 +359,17 @@ const Gguf = struct {
             const k = try GgufString.parse(allocator, r);
             std.debug.print("k: {s}\n", .{k.data});
             const v = try GgufMetadataKvT.parse(r, allocator);
-
-            //var string_bytes = std.mem.asBytes(&k);
-            //_ = try r.readSliceShort(string_bytes[0..]);
-
-            //var v: GgufString = undefined;
-            //string_bytes = std.mem.asBytes(&v);
-            //_ = try r.readSliceShort(string_bytes[0..]);
-
-            //std.debug.print("Metadata: k:{any} v:{any}\n", .{ k.data, v });
             std.debug.print("Inserting key: {s}\n", .{k.data});
             try metadata.put(k.data, v);
         }
 
-        //var tensors: []Tensor = std.ArrayList(Tensor).init(allocator).toSlice();
-        //for (tensor_count) |i| {
-        //    const name_len_bytes = try r.readBytes(4);
-        //    const name_len = @intFromBytes(u32, name_len_bytes);
-        //    const name = try r.readBytes(name_len);
-
-        //    const n_dimensions_bytes = try r.readBytes(4);
-        //    const n_dimensions = @intFromBytes(u32, n_dimensions_bytes);
-
-        //    var dimensions = std.ArrayList(u64).init(allocator).toSlice();
-        //    for (n_dimensions) |j| {
-        //        const dim_bytes = try r.readBytes(8);
-        //        dimensions.append(@intFromBytes(u64, dim_bytes));
-        //    }
-
-        //    const type_bytes = try r.readBytes(4);
-        //    const type = @intFromBytes(u32, type_bytes);
-
-        //    const offset_bytes = try r.readBytes(8);
-        //    const offset = @intFromBytes(u64, offset_bytes);
-
-        //    tensors.append(Tensor{
-        //        .name = name,
-        //        .n_dimensions = n_dimensions,
-        //        .dimensions = dimensions[0..n_dimensions],
-        //        .type = type,
-        //        .offset = offset,
-        //    });
-        //}
-
-        //return Gguf{
-        //    .magic_number = magic_number,
-        //    .version = version,
-        //    .tensor_count = tensor_count,
-        //    .metadata_kv_count = metadata_kv_count,
-        //    .metadata = metadata,
-        //    .tensors = tensors,
-        //};
-        return Gguf{ .magic = magic_array, .version = version, .tensor_count = tensor_count, .metadata_kv_count = metadata_kv_count, .metadata = metadata, .tensors = &.{} };
+        var tensors = std.ArrayList(Tensor).empty;
+        i = 0;
+        while (i < tensor_count) : (i += 1) {
+            const tensor = try Tensor.parse(r, allocator);
+            try tensors.append(allocator, tensor);
+        }
+        return Gguf{ .magic = magic_bytes, .version = version, .tensor_count = tensor_count, .metadata_kv_count = metadata_kv_count, .metadata = metadata, .tensors = tensors };
     }
 
     fn print(self: *Gguf) void {
@@ -340,6 +377,9 @@ const Gguf = struct {
         std.debug.print("Version: {x}\n", .{self.version});
         std.debug.print("Tensor count: {d}\n", .{self.tensor_count});
         std.debug.print("Metadata key-value count: {d}\n", .{self.metadata_kv_count});
+        for (self.tensors.items) |tensor| {
+            std.debug.print("Tensor: {s}, shape: {any}, type: {s}\n", .{ tensor.name.data, tensor.dimensions, @tagName(tensor.type) });
+        }
     }
 
     pub fn deinit(self: *Gguf, allocator: std.mem.Allocator) void {
@@ -357,6 +397,10 @@ const Gguf = struct {
             }
         }
         self.metadata.deinit();
+        for (self.tensors.items) |*item| {
+            item.deinit(allocator);
+        }
+        self.tensors.deinit(allocator);
     }
 };
 
@@ -369,7 +413,6 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, filename: []const u8) !voi
         std.debug.print("Failed to open file: {s}\n", .{filename});
         return;
     };
-    //var gguf: Gguf = try Gguf.initFromFile(io, allocator, file);
     var gguf = try Gguf.initFromFile(io, allocator, file);
     defer gguf.deinit(allocator);
     gguf.print();
