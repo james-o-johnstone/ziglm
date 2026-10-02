@@ -282,19 +282,25 @@ const GgufMetadataKvT = struct {
     // - It must be a hierarchical key, where each segment is `lower_snake_case` and separated by a `.`.
     // - It must be at most 2^16-1/65535 bytes long.
     // Any keys that do not follow these rules are invalid.
+    key: GgufString,
     value_type: GgufMetadataValueType,
     value: GgufMetadataValue,
 
     fn parse(reader: *std.Io.Reader, allocator: std.mem.Allocator) !GgufMetadataKvT {
-        const value_type = try reader.takeEnum(GgufMetadataValueType, .little);
+        const key = try GgufString.parse(allocator, reader);
+        errdefer key.deinit(allocator);
 
+        std.debug.print("k: {s}\n", .{key.data});
+
+        const value_type = try reader.takeEnum(GgufMetadataValueType, .little);
         std.debug.print("about to read meta value, type={any}\n", .{value_type});
         const value: GgufMetadataValue = try GgufMetadataValue.parse(reader, value_type, allocator);
 
-        return GgufMetadataKvT{ .value_type = value_type, .value = value };
+        return GgufMetadataKvT{ .key = key, .value_type = value_type, .value = value };
     }
 
     pub fn deinit(self: *GgufMetadataKvT, allocator: std.mem.Allocator) void {
+        self.key.deinit(allocator);
         switch (self.value_type) {
             .GGUF_METADATA_VALUE_TYPE_STRING => {
                 self.value.deinit(allocator);
@@ -323,11 +329,11 @@ const Gguf = struct {
         var reader = file.readerStreaming(io, &buf);
         var r = &reader.interface;
 
-        const magic = try r.takeArray(4);
-        const magic_bytes = magic.*;
+        const m = try r.takeArray(4);
+        const magic = m.*;
         const version = try r.takeInt(u32, .little);
 
-        if (!std.mem.eql(u8, &magic_bytes, Gguf.MAGIC)) return error.InvalidFile;
+        if (!std.mem.eql(u8, &magic, Gguf.MAGIC)) return error.InvalidFile;
         if (version != Gguf.VERSION) return error.UnsupportedVersion;
 
         const tensor_count = try r.takeInt(u64, .little);
@@ -337,17 +343,15 @@ const Gguf = struct {
         errdefer {
             var it = metadata.iterator();
             while (it.next()) |entry| {
-                allocator.free(entry.key_ptr.*);
+                entry.value_ptr.*.deinit(allocator);
             }
             metadata.deinit();
         }
         std.debug.print("about to read metadata\n", .{});
         for (0..metadata_kv_count) |_| {
-            const k = try GgufString.parse(allocator, r);
-            std.debug.print("k: {s}\n", .{k.data});
-            const v = try GgufMetadataKvT.parse(r, allocator);
-            std.debug.print("Inserting key: {s}\n", .{k.data});
-            try metadata.put(k.data, v);
+            const kv = try GgufMetadataKvT.parse(r, allocator);
+            std.debug.print("Inserting key: {s}\n", .{kv.key.data});
+            try metadata.put(kv.key.data, kv);
         }
 
         var tensors = std.ArrayList(Tensor).empty;
@@ -355,7 +359,7 @@ const Gguf = struct {
             const tensor = try Tensor.parse(r, allocator);
             try tensors.append(allocator, tensor);
         }
-        return Gguf{ .magic = magic_bytes, .version = version, .tensor_count = tensor_count, .metadata_kv_count = metadata_kv_count, .metadata = metadata, .tensors = tensors };
+        return Gguf{ .magic = magic, .version = version, .tensor_count = tensor_count, .metadata_kv_count = metadata_kv_count, .metadata = metadata, .tensors = tensors };
     }
 
     fn print(self: *Gguf) void {
@@ -371,16 +375,7 @@ const Gguf = struct {
     pub fn deinit(self: *Gguf, allocator: std.mem.Allocator) void {
         var it = self.metadata.iterator();
         while (it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            switch (entry.value_ptr.*.value_type) {
-                .GGUF_METADATA_VALUE_TYPE_STRING => {
-                    entry.value_ptr.*.deinit(allocator);
-                },
-                .GGUF_METADATA_VALUE_TYPE_ARRAY => {
-                    entry.value_ptr.*.deinit(allocator);
-                },
-                else => {},
-            }
+            entry.value_ptr.*.deinit(allocator);
         }
         self.metadata.deinit();
         for (self.tensors.items) |*item| {
