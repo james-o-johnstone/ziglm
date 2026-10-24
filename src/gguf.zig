@@ -323,14 +323,22 @@ const Gguf = struct {
         }
         std.debug.print("about to read metadata\n", .{});
         for (0..metadata_kv_count) |_| {
-            const kv = try GgufMetadataKvT.parse(&r, allocator);
+            var kv = try GgufMetadataKvT.parse(&r, allocator);
+            errdefer kv.deinit(allocator);
             std.debug.print("Inserting key: {s}\n", .{kv.key.data});
-            try metadata.put(kv.key.data, kv);
+            const slot = try metadata.getOrPut(kv.key.data);
+            if (slot.found_existing) return error.DuplicateKey;
+            slot.value_ptr.* = kv;
         }
 
         var tensors = std.ArrayList(Tensor).empty;
+        errdefer {
+            for (tensors.items) |*t| t.deinit(allocator);
+            tensors.deinit(allocator);
+        }
         for (0..tensor_count) |_| {
-            const tensor = try Tensor.parse(&r, allocator);
+            var tensor = try Tensor.parse(&r, allocator);
+            errdefer tensor.deinit(allocator);
             try tensors.append(allocator, tensor);
         }
 
@@ -420,9 +428,9 @@ const Gguf = struct {
 };
 
 pub fn load(io: std.Io, allocator: std.mem.Allocator, filename: []const u8) !void {
-    var file = std.Io.Dir.cwd().openFile(io, filename, .{}) catch {
+    var file = std.Io.Dir.cwd().openFile(io, filename, .{}) catch |err| {
         std.debug.print("Failed to open file: {s}\n", .{filename});
-        return;
+        return err;
     };
     defer file.close(io);
 
